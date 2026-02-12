@@ -21,8 +21,15 @@ def process_video(url):
     video_path = "input.mp4"
     
     # 1. Téléchargement
-    with yt_dlp.YoutubeDL({'format': 'best[height<=720]', 'outtmpl': video_path}) as ydl:
-        ydl.download([url])
+    ydl_opts = {
+    "outtmpl": "video.mp4",
+    "cookies": "cookies.txt",
+    "format": "mp4"
+}
+
+with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+    ydl.download([url])
+
 
     # 2. IA Gemini
     send_tg("🧠 L'IA analyse la vidéo pour trouver les moments viraux...")
