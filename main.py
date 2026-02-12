@@ -1,127 +1,143 @@
 import os
 import subprocess
-import whisper
-import random
-import math
+import uuid
+import asyncio
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
-import openai
+from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+import whisper
+import numpy as np
 
-# ================== CONFIG ==================
-BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+TOKEN = os.getenv("TELEGRAM_TOKEN")
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-MAX_SHORTS = 10
-MIN_DURATION = 30
-MAX_DURATION = 60
+BASE_DIR = "work"
+os.makedirs(BASE_DIR, exist_ok=True)
 
-WORKDIR = "temp"
-SHORTS_DIR = f"{WORKDIR}/shorts"
+model = whisper.load_model("small")
 
-os.makedirs(SHORTS_DIR, exist_ok=True)
-
-openai.api_key = OPENAI_API_KEY
-model = whisper.load_model("base")
-
-# ================== UTILS ==================
-
+# ---------------------------
+# UTILITAIRES
+# ---------------------------
 def run(cmd):
     subprocess.run(cmd, shell=True, check=True)
 
-def extract_audio(video):
-    run(f"ffmpeg -y -i {video} -ac 1 -ar 16000 {WORKDIR}/audio.wav")
+# ---------------------------
+# EXTRACTION AUDIO
+# ---------------------------
+def extract_audio(video, audio):
+    run(f"ffmpeg -y -i {video} -vn -ac 1 -ar 16000 {audio}")
 
-def transcribe():
-    return model.transcribe(f"{WORKDIR}/audio.wav", language="fr")
+# ---------------------------
+# TRANSCRIPTION
+# ---------------------------
+def transcribe(audio):
+    result = model.transcribe(audio, language="fr")
+    return result["segments"]
 
-def generate_segments(duration):
-    segments = []
-    t = 0
-    while t + MIN_DURATION < duration and len(segments) < MAX_SHORTS:
-        length = random.randint(MIN_DURATION, MAX_DURATION)
-        segments.append((t, min(t + length, duration)))
-        t += length
-    return segments
+# ---------------------------
+# MEILLEURS MOMENTS
+# ---------------------------
+def best_segments(segments, max_clips=15):
+    scored = []
+    for s in segments:
+        duration = s["end"] - s["start"]
+        words = len(s["text"].split())
+        score = words / max(duration, 1)
+        if 30 <= duration <= 60:
+            scored.append((score, s))
 
-def generate_ass(segments):
-    ass = """[Script Info]
-PlayResX: 1080
-PlayResY: 1920
+    scored.sort(reverse=True, key=lambda x: x[0])
+    return [s for _, s in scored[:max_clips]]
+
+# ---------------------------
+# SOUS-TITRES KARAOKÉ
+# ---------------------------
+def create_ass(segments, ass_path):
+    with open(ass_path, "w") as f:
+        f.write("""[Script Info]
+ScriptType: v4.00+
 
 [V4+ Styles]
-Style: Default,Arial,48,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,2,2,20,20,40,1
+Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
+Style: Default,Arial,42,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,1,0,1,2,0,2,30,30,40,1
 
 [Events]
-"""
-    for s in segments:
-        start = s["start"]
-        end = s["end"]
-        text = s["text"].replace("\n", " ")
-        ass += f"Dialogue: 0,{sec(start)},{sec(end)},Default,,0,0,0,,{text}\n"
+Format: Layer,Start,End,Style,Text
+""")
+        for s in segments:
+            start = s["start"]
+            end = s["end"]
+            text = s["text"].replace("\n", " ")
+            f.write(f"Dialogue: 0,{sec(start)},{sec(end)},Default,{text}\n")
 
-    with open(f"{WORKDIR}/subs.ass", "w", encoding="utf-8") as f:
-        f.write(ass)
+def sec(t):
+    h = int(t // 3600)
+    m = int((t % 3600) // 60)
+    s = t % 60
+    return f"{h}:{m:02}:{s:05.2f}"
 
-def sec(s):
-    h = int(s // 3600)
-    m = int((s % 3600) // 60)
-    s = s % 60
-    return f"{h}:{m:02d}:{s:05.2f}"
+# ---------------------------
+# GÉNÉRATION SHORT
+# ---------------------------
+def make_short(video, seg, idx):
+    out = f"{BASE_DIR}/short_{idx}.mp4"
+    ass = f"{BASE_DIR}/sub_{idx}.ass"
+    create_ass([seg], ass)
 
-def make_short(i, start, end):
-    out = f"{SHORTS_DIR}/short_{i}.mp4"
     run(
-        f"""ffmpeg -y -i {WORKDIR}/input.mp4 \
-        -vf "crop=ih*9/16:ih,ass={WORKDIR}/subs.ass" \
-        -ss {start} -to {end} -c:a copy {out}"""
+        f"""ffmpeg -y -i {video} -vf "subtitles={ass}" \
+        -ss {seg['start']} -to {seg['end']} \
+        -c:v libx264 -preset fast -crf 23 -c:a aac {out}"""
     )
     return out
 
+# ---------------------------
+# MÉTADONNÉES VIRAL
+# ---------------------------
 def generate_meta(text):
-    prompt = f"""
-Génère un titre, une description courte et 8 hashtags
-optimisés pour TikTok et YouTube Shorts en français.
+    title = f"Tu savais ça ? 😳 {text[:60]}"
+    desc = f"{text}\n\n👇 Abonne-toi pour plus de vidéos"
+    tags = "#shorts #tiktokfr #viral #motivation #france"
+    return title, desc, tags
 
-Contenu:
-{text}
-"""
-    r = openai.ChatCompletion.create(
-        model="gpt-4o-mini",
-        messages=[{"role": "user", "content": prompt}]
-    )
-    return r.choices[0].message.content
-
-# ================== TELEGRAM ==================
-
+# ---------------------------
+# BOT TELEGRAM
+# ---------------------------
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video = await update.message.video.get_file()
-    await video.download_to_drive(f"{WORKDIR}/input.mp4")
+    msg = update.message
+    file = await msg.video.get_file() if msg.video else await msg.document.get_file()
 
-    await update.message.reply_text("🎬 Vidéo reçue, traitement en cours...")
+    uid = str(uuid.uuid4())
+    video_path = f"{BASE_DIR}/{uid}.mp4"
+    audio_path = f"{BASE_DIR}/{uid}.wav"
 
-    extract_audio(f"{WORKDIR}/input.mp4")
-    result = transcribe()
+    await file.download_to_drive(video_path)
+    await msg.reply_text("📥 Vidéo reçue, traitement en cours...")
 
-    generate_ass(result["segments"])
+    extract_audio(video_path, audio_path)
+    segments = transcribe(audio_path)
+    best = best_segments(segments)
 
-    duration = math.floor(result["segments"][-1]["end"])
-    segments = generate_segments(duration)
+    for i, seg in enumerate(best):
+        short = make_short(video_path, seg, i)
+        title, desc, tags = generate_meta(seg["text"])
 
-    for i, (start, end) in enumerate(segments):
-        short = make_short(i, start, end)
-        meta = generate_meta(result["text"][:500])
-
-        await update.message.reply_video(
+        await context.bot.send_video(
+            chat_id=CHAT_ID,
             video=open(short, "rb"),
-            caption=meta
+            caption=f"{title}\n\n{desc}\n\n{tags}"
         )
 
-    await update.message.reply_text("✅ Shorts générés avec succès !")
+    await msg.reply_text("🎉 Shorts générés avec succès !")
 
-# ================== MAIN ==================
+# ---------------------------
+# MAIN
+# ---------------------------
+def main():
+    app = ApplicationBuilder().token(TOKEN).build()
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
+    print("🚀 Bot prêt")
+    app.run_polling()
 
-app = ApplicationBuilder().token(BOT_TOKEN).build()
-app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-
-print("🤖 Bot Telegram lancé")
-app.run_polling()
+if __name__ == "__main__":
+    main()
