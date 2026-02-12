@@ -1,7 +1,6 @@
-moviepy
-yt-dlp
-google-generativeai
-feedparser
-Pillow
-requests
+python-telegram-bot==20.7
+openai
+whisper
+ffmpeg-python
+torch
 numpy
