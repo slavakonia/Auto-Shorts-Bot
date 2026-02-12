@@ -1,86 +1,127 @@
-import os, json, time, requests, yt_dlp
-import google.generativeai as genai
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ColorClip
+import os
+import subprocess
+import whisper
+import random
+import math
+from telegram import Update
+from telegram.ext import ApplicationBuilder, MessageHandler, filters, ContextTypes
+import openai
 
-# --- CONFIGURATION ---
-GEMINI_KEY = os.getenv("GEMINI_API_KEY")
-TG_TOKEN = os.getenv("TELEGRAM_TOKEN")
-TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+# ================== CONFIG ==================
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-genai.configure(api_key=GEMINI_KEY)
+MAX_SHORTS = 10
+MIN_DURATION = 30
+MAX_DURATION = 60
 
-def send_tg(text):
-    requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendMessage", data={"chat_id": TG_CHAT_ID, "text": text})
+WORKDIR = "temp"
+SHORTS_DIR = f"{WORKDIR}/shorts"
 
-def create_sub(text, duration):
-    return TextClip(text.upper(), font='Arial-Bold', fontsize=70, color='yellow',
-                    method='caption', size=(600, None), stroke_color='black', stroke_width=2).set_duration(duration).set_position(('center', 800))
+os.makedirs(SHORTS_DIR, exist_ok=True)
 
-def process_video(url):
-    send_tg(f"🎯 Lien YouTube détecté ! Préparation de la génération (10-20 Shorts)... 🚀")
-    video_path = "input.mp4"
-    
-    # 1. Téléchargement
-    ydl_opts = {
-    "outtmpl": "video.mp4",
-    "cookies": "cookies.txt",
-    "format": "mp4"
-}
+openai.api_key = OPENAI_API_KEY
+model = whisper.load_model("base")
 
-with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-    ydl.download([url])
+# ================== UTILS ==================
 
+def run(cmd):
+    subprocess.run(cmd, shell=True, check=True)
 
-    # 2. IA Gemini
-    send_tg("🧠 L'IA analyse la vidéo pour trouver les moments viraux...")
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    vf = genai.upload_file(video_path)
-    while vf.state.name == "PROCESSING": time.sleep(2); vf = genai.get_file(vf.name)
-    
-    prompt = "Trouve les 15 moments les plus viraux (30s chacun). Format JSON: [{'start': 10, 'end': 40, 'title': 'HOOK'}]"
-    res = model.generate_content([prompt, vf])
-    segments = json.loads(res.text.replace('```json', '').replace('```', '').strip())
+def extract_audio(video):
+    run(f"ffmpeg -y -i {video} -ac 1 -ar 16000 {WORKDIR}/audio.wav")
 
-    # 3. Montage Karaoké
-    send_tg(f"🎬 Début du montage de {len(segments)} shorts...")
-    full_clip = VideoFileClip(video_path)
-    
-    for i, seg in enumerate(segments):
-        short = full_clip.subclip(seg['start'], seg['end'])
-        # Vertical 9:16
-        w, h = short.size
-        short = short.crop(x_center=w/2, width=h*9/16, height=h).resize(height=1280)
-        
-        # Subs + Progress Bar
-        txt = create_sub(seg['title'], short.duration)
-        bar = ColorClip(size=(720, 10), color=(255, 255, 0)).set_duration(short.duration).set_position(("left", "bottom")).resize(lambda t: [max(1, int(720 * t / short.duration)), 10])
-        
-        final = CompositeVideoClip([short, txt, bar])
-        out = f"short_{i}.mp4"
-        final.write_videofile(out, fps=24, codec="libx264", audio_codec="aac", logger=None)
-        
-        with open(out, 'rb') as f:
-            requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendVideo", files={'video': f}, data={'chat_id': TG_CHAT_ID, 'caption': f"🔥 Short {i+1}: {seg['title']}"})
-        os.remove(out)
+def transcribe():
+    return model.transcribe(f"{WORKDIR}/audio.wav", language="fr")
 
-    os.remove(video_path)
-    send_tg("✅ Terminé ! Tes shorts sont arrivés.")
+def generate_segments(duration):
+    segments = []
+    t = 0
+    while t + MIN_DURATION < duration and len(segments) < MAX_SHORTS:
+        length = random.randint(MIN_DURATION, MAX_DURATION)
+        segments.append((t, min(t + length, duration)))
+        t += length
+    return segments
 
-def run_agent():
-    print("🚀 Bot Démarré")
-    # On force la lecture des messages
-    updates = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?limit=50").json()
-    
-    found = False
-    for u in reversed(updates.get("result", [])):
-        msg = u.get("message", {}).get("text", "")
-        if "youtube.com" in msg or "youtu.be" in msg:
-            process_video(msg)
-            found = True
-            break
-            
-    if not found:
-        send_tg("🕵️ Je suis allumé, mais je ne vois AUCUN lien YouTube dans notre discussion. Renvoie-le moi maintenant !")
+def generate_ass(segments):
+    ass = """[Script Info]
+PlayResX: 1080
+PlayResY: 1920
 
-if __name__ == "__main__":
-    run_agent()
+[V4+ Styles]
+Style: Default,Arial,48,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,2,2,2,20,20,40,1
+
+[Events]
+"""
+    for s in segments:
+        start = s["start"]
+        end = s["end"]
+        text = s["text"].replace("\n", " ")
+        ass += f"Dialogue: 0,{sec(start)},{sec(end)},Default,,0,0,0,,{text}\n"
+
+    with open(f"{WORKDIR}/subs.ass", "w", encoding="utf-8") as f:
+        f.write(ass)
+
+def sec(s):
+    h = int(s // 3600)
+    m = int((s % 3600) // 60)
+    s = s % 60
+    return f"{h}:{m:02d}:{s:05.2f}"
+
+def make_short(i, start, end):
+    out = f"{SHORTS_DIR}/short_{i}.mp4"
+    run(
+        f"""ffmpeg -y -i {WORKDIR}/input.mp4 \
+        -vf "crop=ih*9/16:ih,ass={WORKDIR}/subs.ass" \
+        -ss {start} -to {end} -c:a copy {out}"""
+    )
+    return out
+
+def generate_meta(text):
+    prompt = f"""
+Génère un titre, une description courte et 8 hashtags
+optimisés pour TikTok et YouTube Shorts en français.
+
+Contenu:
+{text}
+"""
+    r = openai.ChatCompletion.create(
+        model="gpt-4o-mini",
+        messages=[{"role": "user", "content": prompt}]
+    )
+    return r.choices[0].message.content
+
+# ================== TELEGRAM ==================
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    video = await update.message.video.get_file()
+    await video.download_to_drive(f"{WORKDIR}/input.mp4")
+
+    await update.message.reply_text("🎬 Vidéo reçue, traitement en cours...")
+
+    extract_audio(f"{WORKDIR}/input.mp4")
+    result = transcribe()
+
+    generate_ass(result["segments"])
+
+    duration = math.floor(result["segments"][-1]["end"])
+    segments = generate_segments(duration)
+
+    for i, (start, end) in enumerate(segments):
+        short = make_short(i, start, end)
+        meta = generate_meta(result["text"][:500])
+
+        await update.message.reply_video(
+            video=open(short, "rb"),
+            caption=meta
+        )
+
+    await update.message.reply_text("✅ Shorts générés avec succès !")
+
+# ================== MAIN ==================
+
+app = ApplicationBuilder().token(BOT_TOKEN).build()
+app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+
+print("🤖 Bot Telegram lancé")
+app.run_polling()
