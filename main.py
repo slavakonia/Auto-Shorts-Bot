@@ -68,22 +68,27 @@ def process_video(url):
 def run_agent():
     print("🚀 Bot Auto Shorts démarré")
     
-    # Lecture des messages Telegram (on regarde les 20 derniers messages)
-    tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?limit=20"
-    updates = requests.get(tg_url).json()
+    # On demande les 50 derniers messages pour être sûr
+    tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?limit=50"
+    response = requests.get(tg_url).json()
+    
+    print(f"DEBUG: Nombre de messages trouvés : {len(response.get('result', []))}")
     
     found_link = False
-    if "result" in updates:
-        for update in updates["result"]:
+    if "result" in response:
+        # On parcourt du plus récent au plus ancien
+        for update in reversed(response["result"]):
             msg = update.get("message", {}).get("text", "")
+            print(f"DEBUG: Message analysé : {msg}") # Pour voir ce que le bot lit
+            
             if "youtube.com" in msg or "youtu.be" in msg:
+                print(f"🎯 LIEN TROUVÉ : {msg}")
                 process_video(msg)
                 found_link = True
-                break # On traite un lien à la fois par run pour éviter les timeouts GitHub
+                break 
     
     if not found_link:
-        print("🔍 Aucun nouveau lien trouvé sur Telegram.")
-        # Ici on pourrait ajouter le scan YouTube RSS
+        print("🔍 Aucun lien YouTube détecté dans les derniers messages.")
 
 if __name__ == "__main__":
     run_agent()
