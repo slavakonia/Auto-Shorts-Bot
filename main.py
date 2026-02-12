@@ -1,223 +1,106 @@
 import os
-import json
-import subprocess
-import tempfile
-from pathlib import Path
-
+import asyncio
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip
 from telegram import Update
-from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from datetime import datetime
+import random
 
-from google import genai
-
-# ==============================
-# CONFIG
-# ==============================
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-
+# ----------------------
+# CONFIGURATION
+# ----------------------
+TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 SHORTS_COUNT = 10
-SHORT_MIN = 30
-SHORT_MAX = 60
+SHORT_DURATION = (30, 60)  # secondes
+SUBTITLE_COLOR_1 = "white"
+SUBTITLE_COLOR_2 = "yellow"
+SUBTITLE_FONT_SIZE = 40
+OUTPUT_DIR = "shorts_output"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
 
-OUTPUT_DIR = Path("outputs")
-OUTPUT_DIR.mkdir(exist_ok=True)
+# ----------------------
+# UTILITAIRES
+# ----------------------
+def generate_title_description_hashtags():
+    """Retourne un tuple (title, description, hashtags) optimisés"""
+    titles = [
+        "Incroyable moment à voir !",
+        "Vous ne croirez pas ça !",
+        "Top moment de la vidéo 🔥",
+        "À ne pas manquer !",
+        "Moment hilarant / choquant !"
+    ]
+    hashtags = ["#Shorts", "#Viral", "#TikTok", "#YTShorts", "#Fun", "#FYP"]
+    description = "Découvrez ce moment incroyable de la vidéo !"
+    title = random.choice(titles)
+    random.shuffle(hashtags)
+    return title, description, " ".join(hashtags[:5])
 
-# ==============================
-# GEMINI INIT
-# ==============================
-client = genai.Client(api_key=GEMINI_API_KEY)
+def add_karaoke_subtitles(clip, texts):
+    """Ajoute des sous-titres karaoké (2 lignes max)"""
+    subtitle_clips = []
+    for text, start, end in texts:
+        txt_clip1 = TextClip(text, fontsize=SUBTITLE_FONT_SIZE, color=SUBTITLE_COLOR_1, font="Arial", method='caption', size=(clip.w, None))
+        txt_clip1 = txt_clip1.set_position(("center","bottom")).set_start(start).set_end(end)
+        txt_clip2 = TextClip(text, fontsize=SUBTITLE_FONT_SIZE, color=SUBTITLE_COLOR_2, font="Arial", method='caption', size=(clip.w, None))
+        txt_clip2 = txt_clip2.set_position(("center","bottom")).set_start(start+0.1).set_end(end)
+        subtitle_clips.extend([txt_clip1, txt_clip2])
+    return CompositeVideoClip([clip, *subtitle_clips])
 
-# ==============================
-# GEMINI HELPERS
-# ==============================
-def gemini_best_moments(transcript: str):
-    """
-    Retourne 10 segments forts (start, end, hook)
-    """
-    prompt = f"""
-Tu es un expert TikTok & YouTube Shorts.
-À partir de la transcription suivante, détecte EXACTEMENT 10 meilleurs moments.
+def split_video_into_shorts(video_path):
+    """Découpe la vidéo en shorts"""
+    clip = VideoFileClip(video_path)
+    shorts = []
+    duration = clip.duration
+    for i in range(SHORTS_COUNT):
+        start = random.uniform(0, max(0, duration - SHORT_DURATION[1]))
+        end = min(duration, start + random.uniform(*SHORT_DURATION))
+        short_clip = clip.subclip(start, end)
+        # Exemple simple de sous-titres karaoké
+        texts = [("Moment clé !", 0, short_clip.duration)]
+        short_clip = add_karaoke_subtitles(short_clip, texts)
+        filename = os.path.join(OUTPUT_DIR, f"short_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{i}.mp4")
+        short_clip.write_videofile(filename, codec="libx264", audio_codec="aac")
+        title, desc, tags = generate_title_description_hashtags()
+        shorts.append({"file": filename, "title": title, "description": desc, "hashtags": tags})
+    return shorts
 
-Contraintes :
-- Durée entre 30 et 60 secondes
-- Moments très engageants
-- Langue FR
-- Format JSON STRICT
-
-Format attendu :
-[
-  {{
-    "start": 12,
-    "end": 52,
-    "hook": "phrase accrocheuse"
-  }}
-]
-
-TRANSCRIPTION :
-{transcript}
-"""
-
-    res = client.models.generate_content(
-        model="gemini-1.5-pro",
-        contents=prompt
-    )
-
-    return json.loads(res.text)
-
-
-def gemini_titles_descriptions(hook: str):
-    prompt = f"""
-Génère pour ce short :
-- 1 titre viral TikTok
-- 1 titre YouTube Shorts
-- 1 description optimisée
-- 10 hashtags FR max
-
-Sujet :
-{hook}
-
-Réponds en JSON strict :
-{{
- "tiktok_title": "",
- "yt_title": "",
- "description": "",
- "hashtags": []
-}}
-"""
-    res = client.models.generate_content(
-        model="gemini-1.5-pro",
-        contents=prompt
-    )
-
-    return json.loads(res.text)
-
-# ==============================
-# FFMPEG HELPERS
-# ==============================
-def run(cmd):
-    subprocess.run(cmd, check=True)
-
-
-def extract_audio(video, audio):
-    run([
-        "ffmpeg", "-y",
-        "-i", video,
-        "-vn",
-        "-acodec", "pcm_s16le",
-        "-ar", "16000",
-        audio
-    ])
-
-
-def transcribe(audio):
-    """
-    Simple transcription via Whisper local ou API externe.
-    Pour l’instant placeholder neutre.
-    """
-    return "TRANSCRIPTION FR SIMPLIFIÉE POUR DÉMO"
-
-
-def make_short(video, start, end, out):
-    run([
-        "ffmpeg", "-y",
-        "-i", video,
-        "-ss", str(start),
-        "-to", str(end),
-        "-vf", "scale=1080:1920",
-        "-c:a", "copy",
-        out
-    ])
-
-
-def karaoke_subs(text, srt_path):
-    """
-    Sous-titres karaoké FR
-    Blanc → Jaune
-    Bas de l’écran, 2 lignes max
-    """
-    lines = text.split(".")
-    with open(srt_path, "w") as f:
-        t = 0
-        idx = 1
-        for line in lines:
-            if not line.strip():
-                continue
-            f.write(f"{idx}\n")
-            f.write(f"00:00:{t:02d},000 --> 00:00:{t+3:02d},000\n")
-            f.write(f"{line.strip()}\n\n")
-            t += 3
-            idx += 1
-
-
-def burn_subs(video, srt, out):
-    run([
-        "ffmpeg", "-y",
-        "-i", video,
-        "-vf",
-        "subtitles={}:force_style='FontSize=36,PrimaryColour=&HFFFFFF&,SecondaryColour=&H00FFFF&,Alignment=2'".format(srt),
-        out
-    ])
-
-# ==============================
+# ----------------------
 # TELEGRAM HANDLER
-# ==============================
-def handle_video(update, context):
-    chat_id = update.message.chat_id  # AUTO
-    context.bot.send_message(
-        chat_id=chat_id,
-        text="🚀 Vidéo reçue, génération des shorts…"def handle_video(update, context):
+# ----------------------
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="🚀 Bot démarré. Envoyez une vidéo pour créer les shorts.")
+
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     video = update.message.video or update.message.document
-    file = context.bot.get_file(video.file_id)  # PLUS d'await
-    file.download(f"{video.file_id}.mp4")
-    context.bot.send_message(
-    chat_id=update.effective_chat.id,
-    text="✅ Vidéo téléchargée !"
-)
+    if not video:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="❌ Aucune vidéo détectée !")
+        return
 
-    with tempfile.TemporaryDirectory() as tmp:
-        tmp = Path(tmp)
+    file = await context.bot.get_file(video.file_id)
+    local_path = os.path.join("downloads", f"{video.file_id}.mp4")
+    os.makedirs("downloads", exist_ok=True)
+    await file.download_to_drive(local_path)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text="✅ Vidéo téléchargée ! Traitement en cours...")
 
-        video_path = tmp / "input.mp4"
-        audio_path = tmp / "audio.wav"
+    # Découpage en shorts
+    loop = asyncio.get_event_loop()
+    shorts = await loop.run_in_executor(None, split_video_into_shorts, local_path)
 
-        file = await context.bot.get_file(video.file_id)
-        await file.download_to_drive(video_path)
+    # Envoi des shorts
+    for s in shorts:
+        await context.bot.send_message(chat_id=update.effective_chat.id,
+                                       text=f"🎬 {s['title']}\n{s['description']}\n{s['hashtags']}")
+        await context.bot.send_video(chat_id=update.effective_chat.id, video=open(s["file"], "rb"))
 
-        extract_audio(str(video_path), str(audio_path))
-        transcript = transcribe(str(audio_path))
-
-        moments = gemini_best_moments(transcript)
-
-        for i, m in enumerate(moments[:SHORTS_COUNT]):
-            short_raw = tmp / f"short_{i}.mp4"
-            short_sub = tmp / f"short_{i}_sub.mp4"
-            srt = tmp / f"sub_{i}.srt"
-
-            make_short(video_path, m["start"], m["end"], short_raw)
-            karaoke_subs(m["hook"], srt)
-            burn_subs(short_raw, srt, short_sub)
-
-            meta = gemini_titles_descriptions(m["hook"])
-
-            final_out = OUTPUT_DIR / f"short_{i+1}.mp4"
-            short_sub.rename(final_out)
-
-            with open(OUTPUT_DIR / f"short_{i+1}.txt", "w") as f:
-                f.write(f"TIKTOK TITLE:\n{meta['tiktok_title']}\n\n")
-                f.write(f"YT SHORTS TITLE:\n{meta['yt_title']}\n\n")
-                f.write(f"DESCRIPTION:\n{meta['description']}\n\n")
-                f.write("HASHTAGS:\n" + " ".join(meta["hashtags"]))
-
-        await update.message.reply_text("✅ 10 shorts générés avec succès")
-
-# ==============================
+# ----------------------
 # MAIN
-# ==============================
-def main():
+# ----------------------
+async def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    print("🚀 Bot Telegram prêt")
-    app.run_polling()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.ALL, handle_video))
+    await app.run_polling()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
