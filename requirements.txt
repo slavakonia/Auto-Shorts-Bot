@@ -1,0 +1,7 @@
+moviepy
+yt-dlp
+google-generativeai
+feedparser
+Pillow
+requests
+numpy
