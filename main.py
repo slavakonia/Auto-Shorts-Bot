@@ -161,10 +161,12 @@ def burn_subs(video, srt, out):
 # ==============================
 # TELEGRAM HANDLER
 # ==============================
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    video = update.message.video
-    await update.message.reply_text("🎬 Vidéo reçue, traitement en cours...")
-
+def handle_video(update, context):
+    chat_id = update.message.chat_id  # AUTO
+    context.bot.send_message(
+        chat_id=chat_id,
+        text="🚀 Vidéo reçue, génération des shorts…"
+    )
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
 
