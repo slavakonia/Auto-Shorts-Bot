@@ -1,27 +1,33 @@
-name: Auto Shorts Bot
-
+name: Auto Shorts Bot Ultimate
 on:
+  schedule:
+    - cron: '*/30 * * * *' # Se lance toutes les 30 minutes
   workflow_dispatch:
 
 jobs:
-  run:
+  build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
+    - uses: actions/checkout@v4
+    
+    - name: Install System Tools
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y ffmpeg imagemagick
+        # DEBLOQUER IMAGEMAGICK (IMPORTANT POUR LES SOUS-TITRES)
+        sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@\*"/' /etc/ImageMagick-6/policy.xml
 
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.9'
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.9'
 
-      - name: Install deps
-        run: pip install -r requirements.txt
+    - name: Install Deps
+      run: pip install moviepy==1.0.3 yt-dlp google-generativeai feedparser pillow requests numpy
 
-      - name: Run bot
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
+    - name: Run Bot
+      env:
+        GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      run: python main.py
