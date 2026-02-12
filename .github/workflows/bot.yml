@@ -27,6 +27,11 @@ jobs:
     - name: Install Deps
       run: pip install moviepy==1.0.3 yt-dlp google-generativeai feedparser pillow requests numpy
 
+      - name: Write YouTube cookies
+      run: |
+        echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+
+
     - name: Run Bot
       env:
         GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
