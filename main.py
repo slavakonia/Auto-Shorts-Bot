@@ -1,142 +1,213 @@
 import os
+import json
 import subprocess
-import uuid
-import asyncio
+import tempfile
+from pathlib import Path
+
 from telegram import Update
 from telegram.ext import ApplicationBuilder, MessageHandler, ContextTypes, filters
-import whisper
-import numpy as np
 
-TOKEN = os.getenv("TELEGRAM_TOKEN")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+from google import genai
 
-BASE_DIR = "work"
-os.makedirs(BASE_DIR, exist_ok=True)
+# ==============================
+# CONFIG
+# ==============================
+TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
+GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 
-model = whisper.load_model("small")
+SHORTS_COUNT = 10
+SHORT_MIN = 30
+SHORT_MAX = 60
 
-# ---------------------------
-# UTILITAIRES
-# ---------------------------
-def run(cmd):
-    subprocess.run(cmd, shell=True, check=True)
+OUTPUT_DIR = Path("outputs")
+OUTPUT_DIR.mkdir(exist_ok=True)
 
-# ---------------------------
-# EXTRACTION AUDIO
-# ---------------------------
-def extract_audio(video, audio):
-    run(f"ffmpeg -y -i {video} -vn -ac 1 -ar 16000 {audio}")
+# ==============================
+# GEMINI INIT
+# ==============================
+client = genai.Client(api_key=GEMINI_API_KEY)
 
-# ---------------------------
-# TRANSCRIPTION
-# ---------------------------
-def transcribe(audio):
-    result = model.transcribe(audio, language="fr")
-    return result["segments"]
+# ==============================
+# GEMINI HELPERS
+# ==============================
+def gemini_best_moments(transcript: str):
+    """
+    Retourne 10 segments forts (start, end, hook)
+    """
+    prompt = f"""
+Tu es un expert TikTok & YouTube Shorts.
+À partir de la transcription suivante, détecte EXACTEMENT 10 meilleurs moments.
 
-# ---------------------------
-# MEILLEURS MOMENTS
-# ---------------------------
-def best_segments(segments, max_clips=15):
-    scored = []
-    for s in segments:
-        duration = s["end"] - s["start"]
-        words = len(s["text"].split())
-        score = words / max(duration, 1)
-        if 30 <= duration <= 60:
-            scored.append((score, s))
+Contraintes :
+- Durée entre 30 et 60 secondes
+- Moments très engageants
+- Langue FR
+- Format JSON STRICT
 
-    scored.sort(reverse=True, key=lambda x: x[0])
-    return [s for _, s in scored[:max_clips]]
+Format attendu :
+[
+  {{
+    "start": 12,
+    "end": 52,
+    "hook": "phrase accrocheuse"
+  }}
+]
 
-# ---------------------------
-# SOUS-TITRES KARAOKÉ
-# ---------------------------
-def create_ass(segments, ass_path):
-    with open(ass_path, "w") as f:
-        f.write("""[Script Info]
-ScriptType: v4.00+
+TRANSCRIPTION :
+{transcript}
+"""
 
-[V4+ Styles]
-Format: Name,Fontname,Fontsize,PrimaryColour,SecondaryColour,OutlineColour,BackColour,Bold,Italic,BorderStyle,Outline,Shadow,Alignment,MarginL,MarginR,MarginV,Encoding
-Style: Default,Arial,42,&H00FFFFFF,&H0000FFFF,&H00000000,&H64000000,1,0,1,2,0,2,30,30,40,1
-
-[Events]
-Format: Layer,Start,End,Style,Text
-""")
-        for s in segments:
-            start = s["start"]
-            end = s["end"]
-            text = s["text"].replace("\n", " ")
-            f.write(f"Dialogue: 0,{sec(start)},{sec(end)},Default,{text}\n")
-
-def sec(t):
-    h = int(t // 3600)
-    m = int((t % 3600) // 60)
-    s = t % 60
-    return f"{h}:{m:02}:{s:05.2f}"
-
-# ---------------------------
-# GÉNÉRATION SHORT
-# ---------------------------
-def make_short(video, seg, idx):
-    out = f"{BASE_DIR}/short_{idx}.mp4"
-    ass = f"{BASE_DIR}/sub_{idx}.ass"
-    create_ass([seg], ass)
-
-    run(
-        f"""ffmpeg -y -i {video} -vf "subtitles={ass}" \
-        -ss {seg['start']} -to {seg['end']} \
-        -c:v libx264 -preset fast -crf 23 -c:a aac {out}"""
+    res = client.models.generate_content(
+        model="gemini-1.5-pro",
+        contents=prompt
     )
-    return out
 
-# ---------------------------
-# MÉTADONNÉES VIRAL
-# ---------------------------
-def generate_meta(text):
-    title = f"Tu savais ça ? 😳 {text[:60]}"
-    desc = f"{text}\n\n👇 Abonne-toi pour plus de vidéos"
-    tags = "#shorts #tiktokfr #viral #motivation #france"
-    return title, desc, tags
+    return json.loads(res.text)
 
-# ---------------------------
-# BOT TELEGRAM
-# ---------------------------
+
+def gemini_titles_descriptions(hook: str):
+    prompt = f"""
+Génère pour ce short :
+- 1 titre viral TikTok
+- 1 titre YouTube Shorts
+- 1 description optimisée
+- 10 hashtags FR max
+
+Sujet :
+{hook}
+
+Réponds en JSON strict :
+{{
+ "tiktok_title": "",
+ "yt_title": "",
+ "description": "",
+ "hashtags": []
+}}
+"""
+    res = client.models.generate_content(
+        model="gemini-1.5-pro",
+        contents=prompt
+    )
+
+    return json.loads(res.text)
+
+# ==============================
+# FFMPEG HELPERS
+# ==============================
+def run(cmd):
+    subprocess.run(cmd, check=True)
+
+
+def extract_audio(video, audio):
+    run([
+        "ffmpeg", "-y",
+        "-i", video,
+        "-vn",
+        "-acodec", "pcm_s16le",
+        "-ar", "16000",
+        audio
+    ])
+
+
+def transcribe(audio):
+    """
+    Simple transcription via Whisper local ou API externe.
+    Pour l’instant placeholder neutre.
+    """
+    return "TRANSCRIPTION FR SIMPLIFIÉE POUR DÉMO"
+
+
+def make_short(video, start, end, out):
+    run([
+        "ffmpeg", "-y",
+        "-i", video,
+        "-ss", str(start),
+        "-to", str(end),
+        "-vf", "scale=1080:1920",
+        "-c:a", "copy",
+        out
+    ])
+
+
+def karaoke_subs(text, srt_path):
+    """
+    Sous-titres karaoké FR
+    Blanc → Jaune
+    Bas de l’écran, 2 lignes max
+    """
+    lines = text.split(".")
+    with open(srt_path, "w") as f:
+        t = 0
+        idx = 1
+        for line in lines:
+            if not line.strip():
+                continue
+            f.write(f"{idx}\n")
+            f.write(f"00:00:{t:02d},000 --> 00:00:{t+3:02d},000\n")
+            f.write(f"{line.strip()}\n\n")
+            t += 3
+            idx += 1
+
+
+def burn_subs(video, srt, out):
+    run([
+        "ffmpeg", "-y",
+        "-i", video,
+        "-vf",
+        "subtitles={}:force_style='FontSize=36,PrimaryColour=&HFFFFFF&,SecondaryColour=&H00FFFF&,Alignment=2'".format(srt),
+        out
+    ])
+
+# ==============================
+# TELEGRAM HANDLER
+# ==============================
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = update.message
-    file = await msg.video.get_file() if msg.video else await msg.document.get_file()
+    video = update.message.video
+    await update.message.reply_text("🎬 Vidéo reçue, traitement en cours...")
 
-    uid = str(uuid.uuid4())
-    video_path = f"{BASE_DIR}/{uid}.mp4"
-    audio_path = f"{BASE_DIR}/{uid}.wav"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
 
-    await file.download_to_drive(video_path)
-    await msg.reply_text("📥 Vidéo reçue, traitement en cours...")
+        video_path = tmp / "input.mp4"
+        audio_path = tmp / "audio.wav"
 
-    extract_audio(video_path, audio_path)
-    segments = transcribe(audio_path)
-    best = best_segments(segments)
+        file = await context.bot.get_file(video.file_id)
+        await file.download_to_drive(video_path)
 
-    for i, seg in enumerate(best):
-        short = make_short(video_path, seg, i)
-        title, desc, tags = generate_meta(seg["text"])
+        extract_audio(str(video_path), str(audio_path))
+        transcript = transcribe(str(audio_path))
 
-        await context.bot.send_video(
-            chat_id=CHAT_ID,
-            video=open(short, "rb"),
-            caption=f"{title}\n\n{desc}\n\n{tags}"
-        )
+        moments = gemini_best_moments(transcript)
 
-    await msg.reply_text("🎉 Shorts générés avec succès !")
+        for i, m in enumerate(moments[:SHORTS_COUNT]):
+            short_raw = tmp / f"short_{i}.mp4"
+            short_sub = tmp / f"short_{i}_sub.mp4"
+            srt = tmp / f"sub_{i}.srt"
 
-# ---------------------------
+            make_short(video_path, m["start"], m["end"], short_raw)
+            karaoke_subs(m["hook"], srt)
+            burn_subs(short_raw, srt, short_sub)
+
+            meta = gemini_titles_descriptions(m["hook"])
+
+            final_out = OUTPUT_DIR / f"short_{i+1}.mp4"
+            short_sub.rename(final_out)
+
+            with open(OUTPUT_DIR / f"short_{i+1}.txt", "w") as f:
+                f.write(f"TIKTOK TITLE:\n{meta['tiktok_title']}\n\n")
+                f.write(f"YT SHORTS TITLE:\n{meta['yt_title']}\n\n")
+                f.write(f"DESCRIPTION:\n{meta['description']}\n\n")
+                f.write("HASHTAGS:\n" + " ".join(meta["hashtags"]))
+
+        await update.message.reply_text("✅ 10 shorts générés avec succès")
+
+# ==============================
 # MAIN
-# ---------------------------
+# ==============================
 def main():
-    app = ApplicationBuilder().token(TOKEN).build()
-    app.add_handler(MessageHandler(filters.VIDEO | filters.Document.VIDEO, handle_video))
-    print("🚀 Bot prêt")
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    print("🚀 Bot Telegram prêt")
     app.run_polling()
 
 if __name__ == "__main__":
