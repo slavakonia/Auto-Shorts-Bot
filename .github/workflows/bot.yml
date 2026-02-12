@@ -14,8 +14,10 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y ffmpeg imagemagick
-        # DEBLOQUER IMAGEMAGICK (IMPORTANT POUR LES SOUS-TITRES)
         sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@\*"/' /etc/ImageMagick-6/policy.xml
+
+    - name: Install Dependencies
+      run: pip install moviepy==1.0.3 yt-dlp google-generativeai pillow requests numpy
 
     - name: Set up Python
       uses: actions/setup-python@v4
