@@ -1,40 +1,52 @@
 import os, json, time, requests, yt_dlp, feedparser
 import google.generativeai as genai
-from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ColorClip
+# Note : Si MoviePy te pose problème sur GitHub, on peut utiliser FFmpeg direct, 
+# mais restons sur MoviePy pour le moment.
 
-# --- CONFIGURATION ---
+# --- CONFIGURATION (Assure-toi que ces noms correspondent à tes Secrets GitHub) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
-CHANNELS = ["UCv6UXP-H47-Vb-Txs-W9pzA", "UCjEdsqg2p3J_O0K7yQy4tHg"] 
-
-genai.configure(api_key=GEMINI_API_KEY)
 
 def send_tg(text):
     requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage", 
                   data={"chat_id": TELEGRAM_CHAT_ID, "text": text})
 
-def create_subtitle(text, duration):
-    # Style Karaoké simple et percutant
-    return TextClip(
-        text.upper(), font='Arial-Bold', fontsize=70, color='yellow',
-        method='caption', size=(600, None), stroke_color='black', stroke_width=2
-    ).set_duration(duration).set_position(('center', 800))
-
-def process_video(url):
-    send_tg("📥 Vidéo détectée ! Lancement de la machine (Analyse + Montage)...")
-    video_path = "input.mp4"
+def run_agent():
+    print("🚀 Bot Auto Shorts démarré")
+    send_tg("🤖 Bot en ligne. Analyse de ton lien en cours...")
     
-    # 1. Download
-    with yt_dlp.YoutubeDL({'format': 'best[height<=720]', 'outtmpl': video_path}) as ydl:
-        ydl.download([url])
-
-    # 2. AI Analysis (Demande de 15-20 segments)
-    model = genai.GenerativeModel('gemini-1.5-flash')
-    vf = genai.upload_file(video_path)
-    while vf.state.name == "PROCESSING": time.sleep(2); vf = genai.get_file(vf.name)
+    # On demande TOUS les messages non traités
+    tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    response = requests.get(tg_url).json()
     
-    prompt = "Analyse cette vidéo. Trouve les 15 segments les plus captivants (30-40s). Retourne UNIQUEMENT un JSON: [{'start': 10, 'end': 40, 'title': 'TITRE'}]"
+    # --- LOG DE DEBUG DANS GITHUB ---
+    print(f"DEBUG JSON REÇU : {json.dumps(response, indent=2)}")
+    
+    updates = response.get("result", [])
+    if not updates:
+        print("❌ Aucun message trouvé dans la file d'attente Telegram.")
+        send_tg("⚠️ Je ne vois aucun nouveau lien. Renvoie-le moi sur Telegram !")
+        return
+
+    found_link = False
+    # On parcourt les messages du plus récent au plus ancien
+    for update in reversed(updates):
+        msg = update.get("message", {}).get("text", "")
+        print(f"Analyse du message : {msg}")
+        
+        if "youtube.com" in msg or "youtu.be" in msg:
+            print(f"🎯 LIEN DÉTECTÉ : {msg}")
+            send_tg(f"✅ Lien reçu : {msg}\nLancement de la découpe (10-20 Shorts)...")
+            
+            # Ici on appelle ta fonction de découpe (process_video)
+            # Pour le test, on va juste simuler :
+            print("Début du téléchargement et de l'analyse...")
+            found_link = True
+            break # On traite le lien le plus récent et on s'arrête
+            
+    if not found_link:
+        print("🔍 Aucun lien YouTube dans les messages récents.")    prompt = "Analyse cette vidéo. Trouve les 15 segments les plus captivants (30-40s). Retourne UNIQUEMENT un JSON: [{'start': 10, 'end': 40, 'title': 'TITRE'}]"
     res = model.generate_content([prompt, vf])
     try:
         segments = json.loads(res.text.replace('```json', '').replace('```', '').strip())
