@@ -4,3 +4,4 @@ whisper
 ffmpeg-python
 torch
 numpy
+moviepy
