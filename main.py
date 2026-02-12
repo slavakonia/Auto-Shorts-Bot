@@ -1,144 +1,101 @@
-import os
-import time
-import json
-import subprocess
-import requests
-import yt_dlp
+import os, json, time, requests, yt_dlp, feedparser
 import google.generativeai as genai
+import numpy as np
+from datetime import datetime, timezone
+from PIL import Image, ImageDraw, ImageFont
+from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ColorClip
 
-# =========================
-# 🔐 ENV
-# =========================
-GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
-TELEGRAM_TOKEN = os.environ["TELEGRAM_TOKEN"]
-TELEGRAM_CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
+# --- CONFIGURATION ---
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+CHANNELS = ["UCv6UXP-H47-Vb-Txs-W9pzA", "UCjEdsqg2p3J_O0K7yQy4tHg"] # Ajoute tes IDs ici
 
 genai.configure(api_key=GEMINI_API_KEY)
 
-WORKDIR = "work"
-os.makedirs(WORKDIR, exist_ok=True)
+def log(msg): print(f"🤖 {msg}")
 
-# =========================
-# 📲 TELEGRAM
-# =========================
-def telegram_send(text):
-    requests.post(
-        f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage",
-        data={"chat_id": TELEGRAM_CHAT_ID, "text": text}
-    )
+# --- MOTEUR DE SOUS-TITRES KARAOKÉ ---
+def create_subtitle(text, duration, size):
+    # Crée un texte stylisé avec contour
+    return TextClip(
+        text.upper(),
+        fontsize=70,
+        color='yellow',
+        font='Arial-Bold',
+        stroke_color='black',
+        stroke_width=2,
+        method='caption',
+        size=(size[0]*0.8, None)
+    ).set_duration(duration).set_position(('center', 500))
 
-def telegram_send_video(path, caption):
-    with open(path, "rb") as f:
-        requests.post(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo",
-            files={"video": f},
-            data={"chat_id": TELEGRAM_CHAT_ID, "caption": caption}
-        )
+# --- TRAITEMENT COMPLET ---
+def process_video(url, title):
+    log(f"🚀 Traitement lancé pour : {title}")
+    video_path = "input.mp4"
+    
+    # 1. Téléchargement haute qualité
+    ydl_opts = {'format': 'bestvideo[height<=720]+bestaudio/best', 'outtmpl': video_path, 'quiet': True}
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl: ydl.download([url])
 
-def wait_for_link():
-    telegram_send("📥 Envoie un lien YouTube pour générer des Shorts")
-    last = 0
-    while True:
-        r = requests.get(
-            f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates?offset={last+1}"
-        ).json()
-        for u in r.get("result", []):
-            last = u["update_id"]
-            txt = u.get("message", {}).get("text", "")
-            if "youtu" in txt:
-                return txt
-        time.sleep(3)
+    # 2. Analyse Gemini pour 10-20 segments
+    model = genai.GenerativeModel('gemini-1.5-flash')
+    video_file = genai.upload_file(video_path)
+    while video_file.state.name == "PROCESSING": time.sleep(2); video_file = genai.get_file(video_file.name)
+    
+    prompt = "Trouve les 15 moments les plus viraux (30s chacun). Pour chaque segment, donne un titre accrocheur. Format JSON: [{'start': 10, 'end': 40, 'title': 'HOOK'}]"
+    response = model.generate_content([prompt, video_file])
+    segments = json.loads(response.text.replace('```json', '').replace('```', '').strip())
 
-# =========================
-# ⬇️ DOWNLOAD
-# =========================
-def download_video(url):
-    out = f"{WORKDIR}/input.mp4"
-    if os.path.exists(out): os.remove(out)
-    ydl_opts = {"outtmpl": out, "format": "mp4"}
-    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-        ydl.download([url])
-    return out
-
-# =========================
-# 🧠 GEMINI ANALYSE
-# =========================
-def analyze(video):
-    model = genai.GenerativeModel("gemini-2.5-flash")
-    file = genai.upload_file(video)
-    while file.state.name == "PROCESSING":
-        time.sleep(5)
-        file = genai.get_file(file.name)
-
-    prompt = """
-    Analyse cette vidéo.
-    Trouve 5 segments viraux (30–60s) pour TikTok & YouTube Shorts.
-    Réponds UNIQUEMENT en JSON :
-    [
-      {
-        "start": 12,
-        "end": 45,
-        "title": "Titre accrocheur",
-        "description": "Description courte",
-        "tags": "#ia #shorts #tiktok",
-        "subtitle": "Texte parlé"
-      }
-    ]
-    """
-
-    res = model.generate_content([prompt, file])
-    txt = res.text.strip().split("```json")[-1].split("```")[0]
-    return json.loads(txt)
-
-# =========================
-# 🎬 FFMPEG CUT + 9:16
-# =========================
-def make_short(src, seg, idx):
-    out = f"{WORKDIR}/short_{idx}.mp4"
-
-    subtitle = seg["subtitle"].replace("'", "").replace("\n", " ")
-
-    cmd = [
-        "ffmpeg", "-y",
-        "-ss", str(seg["start"]),
-        "-to", str(seg["end"]),
-        "-i", src,
-        "-vf",
-        f"crop=ih*9/16:ih,scale=1080:1920,"
-        f"drawtext=text='{subtitle}':"
-        f"fontcolor=yellow:fontsize=48:"
-        f"x=(w-text_w)/2:y=h-200:"
-        f"borderw=2:bordercolor=black",
-        "-c:a", "aac",
-        out
-    ]
-    subprocess.run(cmd, check=True)
-    return out
-
-# =========================
-# 🚀 MAIN
-# =========================
-def main():
-    telegram_send("🤖 Bot prêt")
-    link = wait_for_link()
-    telegram_send("⬇️ Téléchargement…")
-    video = download_video(link)
-
-    telegram_send("🧠 Analyse IA…")
-    segments = analyze(video)
-
+    # 3. Découpe et Montage FFMPEG via MoviePy
     for i, seg in enumerate(segments):
-        telegram_send(f"🎬 Short {i+1}/5")
-        short = make_short(video, seg, i)
+        log(f"🎬 Création du Short {i+1}/{len(segments)}")
+        clip = VideoFileClip(video_path).subclip(seg['start'], seg['end'])
+        
+        # Format Vertical 9:16
+        w, h = clip.size
+        target_w = h * 9 / 16
+        clip = clip.crop(x_center=w/2, width=target_w, height=h).resize(height=1280)
+        
+        # Ajout du titre Karaoké (simplifié pour la vitesse)
+        txt = create_subtitle(seg['title'], clip.duration, (720, 1280))
+        
+        # Barre de progression
+        progress = ColorClip(size=(720, 10), color=(255, 255, 0)).set_duration(clip.duration).set_position(("left", "bottom")).resize(lambda t: [max(1, int(720 * t / clip.duration)), 10])
+        
+        final = CompositeVideoClip([clip, txt, progress])
+        short_name = f"short_{i}.mp4"
+        final.write_videofile(short_name, fps=24, codec="libx264", audio_codec="aac", preset="ultrafast", logger=None)
+        
+        # 4. Envoi Telegram
+        with open(short_name, 'rb') as f:
+            requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendVideo", files={'video': f}, data={'chat_id': TELEGRAM_CHAT_ID, 'caption': f"✅ Short {i+1}: {seg['title']}"})
+        
+        os.remove(short_name) # Nettoyage immédiat pour la place disque
+    
+    os.remove(video_path)
 
-        caption = (
-            f"🔥 {seg['title']}\n\n"
-            f"{seg['description']}\n\n"
-            f"{seg['tags']}"
-        )
-        telegram_send_video(short, caption)
+# --- ÉCOUTEUR TELEGRAM & YOUTUBE ---
+def run_agent():
+    # 1. Vérifier nouveaux liens sur Telegram
+    log("📩 Vérification des messages Telegram...")
+    tg_url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+    updates = requests.get(tg_url).json()
+    if updates["result"]:
+        for update in updates["result"]:
+            msg = update.get("message", {}).get("text", "")
+            if "youtube.com" in msg or "youtu.be" in msg:
+                process_video(msg, "Lien Manuel Telegram")
+                # Optionnel : Marquer comme lu (nécessite offset)
 
-    telegram_send("✅ Tous les shorts sont prêts")
+    # 2. Vérifier YouTube RSS
+    log("📺 Vérification YouTube...")
+    for c_id in CHANNELS:
+        feed = feedparser.parse(f"https://www.youtube.com/feeds/videos.xml?channel_id={c_id}")
+        if feed.entries:
+            latest = feed.entries[0]
+            # Ici tu peux ajouter une logique de temps pour éviter les doublons
+            process_video(latest.link, latest.title)
 
 if __name__ == "__main__":
-    main()
+    run_agent()
