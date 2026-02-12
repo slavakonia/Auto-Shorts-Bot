@@ -169,7 +169,10 @@ def handle_video(update, context):
     video = update.message.video or update.message.document
     file = context.bot.get_file(video.file_id)  # PLUS d'await
     file.download(f"{video.file_id}.mp4")
-    context.bot.send_message(chat_id=update.effective_chat.id, text="✅ Vidéo téléchargée !")
+    context.bot.send_message(
+    chat_id=update.effective_chat.id,
+    text="✅ Vidéo téléchargée !"
+)
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
