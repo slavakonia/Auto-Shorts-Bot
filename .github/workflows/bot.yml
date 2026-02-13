@@ -28,9 +28,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install moviepy==1.0.3 yt-dlp google-generativeai requests pillow numpy
 
+      - name: Create Cookies File
+        run: echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+
       - name: Run Bot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
+
+
