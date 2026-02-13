@@ -30,7 +30,7 @@ def process_video(file_path):
     send_tg("🧠 Analyse IA (Gemini 1.5 Flash) en cours...")
     
     # Utilisation du modèle stable pour éviter l'erreur 404
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    model = genai.GenerativeModel('gemini-1.5-flash')
     
     # Upload du fichier vers l'API Gemini
     video_file = genai.upload_file(file_path)
