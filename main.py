@@ -27,11 +27,12 @@ def process_video(url):
     video_path = "input.mp4"
     
     # BLOC CORRIGÉ POUR ÉVITER L'ERREUR "SIGN IN TO CONFIRM YOU'RE NOT A BOT"
-    ydl_opts = {
+        ydl_opts = {
         'format': 'best[height<=720]',
         'outtmpl': video_path,
         'quiet': True,
         'nocheckcertificate': True,
+        'cookiefile': 'cookies.txt',  # <--- INDISPENSABLE
         'extractor_args': {
             'youtube': {
                 'player_client': ['android', 'web_embedded']
