@@ -1,5 +1,5 @@
 import os, json, time, requests
-import google.generativeai as genai
+import google.generativeai as genai # On garde celui-ci pour l'instant car google.genai est la toute nouvelle version 2026
 from moviepy.editor import VideoFileClip, TextClip, CompositeVideoClip, ColorClip
 
 # --- CONFIGURATION ---
@@ -14,34 +14,44 @@ def send_tg(text):
 
 def create_subtitle(text, duration):
     try:
+        # Style Karaoké Premium
         return TextClip(
-            text.upper(), font='Arial-Bold', fontsize=70, color='yellow',
-            method='caption', size=(600, None), stroke_color='black', stroke_width=2
-        ).set_duration(duration).set_position(('center', 800))
+            text.upper(), font='Arial-Bold', fontsize=65, color='yellow',
+            method='caption', size=(620, None), stroke_color='black', stroke_width=2
+        ).set_duration(duration).set_position(('center', 850))
     except: return None
 
 def process_video_file(file_path):
-    """La logique de découpe reste la même une fois le fichier obtenu"""
-    send_tg("🧠 Analyse IA par Gemini en cours...")
+    send_tg("🧠 Analyse du contenu par l'IA...")
     model = genai.GenerativeModel('gemini-1.5-flash')
     
+    # Upload vers Gemini pour analyse
     video_file = genai.upload_file(file_path)
     while video_file.state.name == "PROCESSING":
         time.sleep(2)
         video_file = genai.get_file(video_file.name)
     
-    prompt = "Trouve 10 moments viraux de 30s. Répond UNIQUEMENT avec un JSON: [{'start': 10, 'end': 40, 'title': 'TITRE'}]"
+    # Prompt optimisé pour 2026
+    prompt = "Find 10 viral segments (30s each). Return ONLY JSON: [{'start': 10, 'end': 40, 'title': 'HOOK'}]"
     response = model.generate_content([prompt, video_file])
-    segments = json.loads(response.text.replace('```json', '').replace('```', '').strip())
+    
+    try:
+        raw_json = response.text.replace('```json', '').replace('```', '').strip()
+        segments = json.loads(raw_json)
+    except:
+        send_tg("❌ L'IA a renvoyé un format invalide. Réessaie.")
+        return
 
-    send_tg(f"🎬 Montage de {len(segments)} Shorts...")
-    full_clip = VideoFileClip(file_path)
+    send_tg(f"🎬 Création de {len(segments)} Shorts en cours...")
+    clip = VideoFileClip(file_path)
     
     for i, seg in enumerate(segments):
-        short = full_clip.subclip(seg['start'], seg['end'])
+        # Format 9:16 Vertical
+        short = clip.subclip(seg['start'], seg['end'])
         w, h = short.size
         short = short.crop(x_center=w/2, width=h*9/16, height=h).resize(height=1280)
         
+        # Sous-titres + Progress Bar
         txt = create_subtitle(seg['title'], short.duration)
         bar = ColorClip(size=(720, 10), color=(255, 255, 0)).set_duration(short.duration).set_position(("left", "bottom")).resize(lambda t: [max(1, int(720 * t / short.duration)), 10])
         
@@ -53,39 +63,37 @@ def process_video_file(file_path):
             requests.post(f"https://api.telegram.org/bot{TG_TOKEN}/sendVideo", files={'video': f}, data={'chat_id': TG_CHAT_ID, 'caption': f"🔥 Short {i+1}: {seg['title']}"})
         os.remove(out)
     
-    full_clip.close()
+    clip.close()
     os.remove(file_path)
-    send_tg("✅ Terminé !")
+    send_tg("✅ Tous les Shorts sont prêts !")
 
 def run_agent():
     print("🤖 Bot en attente de fichier ou lien...")
-    resp = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?limit=5").json()
+    # On force la lecture en ignorant l'historique lu
+    url = f"https://api.telegram.org/bot{TG_TOKEN}/getUpdates?offset=-1" 
+    resp = requests.get(url).json()
     
-    if "result" in resp:
-        for update in reversed(resp["result"]):
-            msg = update.get("message", {})
+    if "result" in resp and len(resp["result"]) > 0:
+        msg = resp["result"][0].get("message", {})
+        
+        # PRIORITÉ : Vidéo Directe
+        if "video" in msg:
+            send_tg("📥 Vidéo reçue ! Préparation du montage...")
+            file_id = msg["video"]["file_id"]
+            file_info = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getFile?file_id={file_id}").json()
             
-            # CAS 1 : C'est une vidéo directe
-            if "video" in msg:
-                send_tg("📥 Vidéo reçue en direct ! Téléchargement depuis Telegram...")
-                file_id = msg["video"]["file_id"]
-                file_info = requests.get(f"https://api.telegram.org/bot{TG_TOKEN}/getFile?file_id={file_id}").json()
-                file_path_tg = file_info["result"]["file_path"]
-                
-                download_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{file_path_tg}"
-                r = requests.get(download_url)
-                with open("input.mp4", "wb") as f:
-                    f.write(r.content)
-                
-                process_video_file("input.mp4")
+            if not file_info.get("ok"):
+                send_tg("❌ Fichier trop lourd (limite 20Mo). Compresse-le ou envoie un lien.")
                 return
 
-            # CAS 2 : C'est un lien YouTube (On garde l'ancienne méthode au cas où)
-            text = msg.get("text", "")
-            if "youtube.com" in text or "youtu.be" in text:
-                send_tg("🔗 Lien reçu ! (Note : Si ça échoue, envoie la vidéo directement)")
-                # ... (Ici ton ancienne logique yt-dlp si tu veux la garder)
-                return
+            download_url = f"https://api.telegram.org/file/bot{TG_TOKEN}/{file_info['result']['file_path']}"
+            r = requests.get(download_url)
+            with open("input.mp4", "wb") as f:
+                f.write(r.content)
+            
+            process_video_file("input.mp4")
+        else:
+            print("🔍 Aucun nouveau message vidéo trouvé.")
 
 if __name__ == "__main__":
     run_agent()
