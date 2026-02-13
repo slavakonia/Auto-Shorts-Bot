@@ -16,26 +16,26 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install System Tools
+      - name: Install System Tools (FFmpeg & ImageMagick)
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick
-          # Débloquer ImageMagick pour les sous-titres
+          # DÉBLOQUER LES DROITS D'ÉCRITURE POUR LES SOUS-TITRES
           sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@\*"/' /etc/ImageMagick-6/policy.xml
 
       - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install moviepy==1.0.3 yt-dlp google-generativeai requests pillow numpy
-
-      - name: Create Cookies File
-        run: echo "${{ secrets.YT_COOKIES }}" > cookies.txt
+          # Installation forcée de imageio-ffmpeg pour MoviePy
+          pip install moviepy==1.0.3 imageio-ffmpeg yt-dlp google-generativeai requests pillow numpy
 
       - name: Run Bot
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python main.py
-
-
+          YT_COOKIES: ${{ secrets.YT_COOKIES }}
+        run: |
+          # Création du fichier cookies seulement s'il existe dans les secrets
+          if [ ! -z "$YT_COOKIES" ]; then echo "$YT_COOKIES" > cookies.txt; fi
+          python main.py
