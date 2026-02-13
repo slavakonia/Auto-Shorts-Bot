@@ -27,10 +27,10 @@ def create_subtitle(text, duration):
 
 def process_video(file_path):
     """Analyse avec Gemini et découpe en Shorts"""
-    send_tg("🧠 Analyse IA (Gemini 1.5 Flash) en cours...")
+    send_tg("🧠 Analyse IA (Gemini 2.5 Flash) en cours...")
     
     # Utilisation du modèle stable pour éviter l'erreur 404
-    model = genai.GenerativeModel('gemini-1.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     # Upload du fichier vers l'API Gemini
     video_file = genai.upload_file(file_path)
