@@ -35,8 +35,8 @@ def process_video(file_path):
     # Crucial : Laisser le temps au système de finaliser l'écriture du fichier
     time.sleep(3)
 
-    send_tg("🧠 Analyse IA (Gemini 1.5 Flash) en cours...")
-    model = genai.GenerativeModel('gemini-1.5-flash-latest')
+    send_tg("🧠 Analyse IA (Gemini 2.5 Flash) en cours...")
+    model = genai.GenerativeModel('gemini-2.5-flash')
     
     try:
         video_file = genai.upload_file(file_path)
