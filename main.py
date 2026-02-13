@@ -23,7 +23,14 @@ def create_karaoke_sub(text, duration):
 def process_video(url):
     send_tg_msg("🚀 Lien reçu ! Téléchargement et analyse en cours...")
     video_path = "input.mp4"
-    
+    ydl_opts = {
+    'format': 'best[height<=720]',
+    'outtmpl': video_path,
+    'quiet': True,
+    'nocheckcertificate': True,
+    'extractor_args': {'youtube': {'player_client': ['android', 'web_embedded']}},
+}
+
     # 1. Download
     with yt_dlp.YoutubeDL({'format': 'best[height<=720]', 'outtmpl': video_path, 'quiet': True}) as ydl:
         ydl.download([url])
