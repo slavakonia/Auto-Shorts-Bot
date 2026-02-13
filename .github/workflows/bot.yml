@@ -1,8 +1,8 @@
 name: Auto Shorts Bot
 on:
   schedule:
-    - cron: '*/30 * * * *' # Se lance toutes les 30 min
-  workflow_dispatch: # Permet de lancer manuellement
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,17 +16,17 @@ jobs:
         with:
           python-version: '3.10'
 
-      - name: Install System Tools (FFmpeg & ImageMagick)
+      - name: Install System Tools
         run: |
           sudo apt-get update
           sudo apt-get install -y ffmpeg imagemagick
-          # DÉBLOQUER LES DROITS D'ÉCRITURE POUR LES SOUS-TITRES
+          # Débloquer ImageMagick pour les sous-titres
           sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@\*"/' /etc/ImageMagick-6/policy.xml
 
-      - name: Install Dependencies
+      - name: Install Python Dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install moviepy==1.0.3 yt-dlp google-generativeai requests feedparser pillow numpy
+          pip install moviepy==1.0.3 yt-dlp google-generativeai requests pillow numpy
 
       - name: Run Bot
         env:
