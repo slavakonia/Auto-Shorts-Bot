@@ -1,25 +1,36 @@
+name: Auto Shorts Bot
+on:
+  schedule:
+    - cron: '*/30 * * * *' # Se lance toutes les 30 min
+  workflow_dispatch: # Permet de lancer manuellement
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install System Tools (ImageMagick & FFmpeg)
+      - name: Install System Tools (FFmpeg & ImageMagick)
         run: |
           sudo apt-get update
-          sudo apt-get install -y imagemagick ffmpeg
-          # Cette ligne débloque les droits d'écriture d'ImageMagick sur Linux
+          sudo apt-get install -y ffmpeg imagemagick
+          # DÉBLOQUER LES DROITS D'ÉCRITURE POUR LES SOUS-TITRES
           sudo sed -i 's/<policy domain="path" rights="none" pattern="@\*"/<policy domain="path" rights="read|write" pattern="@\*"/' /etc/ImageMagick-6/policy.xml
 
-      - name: Install Python Dependencies
+      - name: Install Dependencies
         run: |
-          pip install moviepy==1.0.3 yt-dlp google-generativeai requests feedparser
+          python -m pip install --upgrade pip
+          pip install moviepy==1.0.3 yt-dlp google-generativeai requests feedparser pillow numpy
 
       - name: Run Bot
         env:
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python main.py
